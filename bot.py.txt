@@ -1,0 +1,54 @@
+pythonimport logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+# === НАСТРОЙКИ ПОД ТЕБЯ ===
+TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН_ОТ_BOTFATHER"
+ADMIN_USERNAME = "Volkswagen873"  # без @
+ADMIN_EMAIL = "satirikon2212@gmail.com"
+# =========================
+
+logging.basicConfig(level=logging.INFO)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("📦 Создать заказ", callback_data='create_order')],
+        [InlineKeyboardButton("🛵 Стать курьером", callback_data='courier')],
+    ]
+    await update.message.reply_text(
+        "Привет! Это ЧАС ПИК Павлодар — доставка за 60 минут.\n\nВыбери действие:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.username
+    if user != ADMIN_USERNAME:
+        await update.message.reply_text("⛔ У вас нет доступа.")
+        return
+    await update.message.reply_text(
+        f"👑 Админка ЧАС ПИК\n\n"
+        f"Админ: @{ADMIN_USERNAME}\n"
+        f"Почта: {ADMIN_EMAIL}\n\n"
+        f"📦 Активных заказов: 0\n"
+        f"💰 Заработок сегодня: 0 тг\n"
+        f"🛵 Курьеров на линии: 0\n\n"
+        f"Бот работает. Адреса - универсальные по Павлодару."
+    )
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == 'create_order':
+        await query.message.reply_text("Напиши адрес ОТКУДА и КУДА доставить. Пример:\nСатпаева 12 кв 5 -> Назарбаева 200")
+    elif query.data == 'courier':
+        await query.message.reply_text("Чтобы стать курьером, напиши свой номер телефона.")
+
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
