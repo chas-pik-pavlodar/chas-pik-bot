@@ -2,6 +2,8 @@ import os
 import logging
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 class DummyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -18,14 +20,15 @@ def run_dummy_server():
     server.serve_forever()
 
 Thread(target=run_dummy_server, daemon=True).start()
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = "8933761066:AAERcm7bd2ijM0RJd-5Twrlw1C0rMMGuS4s"
+# Берем токен из настроек Render
+TOKEN = os.environ.get("BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("Нет BOT_TOKEN в Environment!")
+
 ADMIN_USERNAME = "Volkamagen979"
-ADMIN_EMAIL = "satirikon2212@gmail.com"
-
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -43,15 +46,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting_order'] = True
     elif query.data == 'courier':
         await query.edit_message_text("Чтобы стать курьером, напишите ваше имя и номер телефона:")
+        context.user_data['awaiting_courier'] = True
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    text = update.message.text
+    
     if context.user_data.get('awaiting_order'):
-        order_text = update.message.text
-        user = update.message.from_user
-        text_for_admin = f"Новый заказ от @{user.username} ({user.id}):\n{order_text}"
-        # тут можно отправить админу
-        await update.message.reply_text(f"Спасибо! Ваш заказ принят: {order_text}\nМы свяжемся с вами. Админ {ADMIN_USERNAME}")
+        logger.info(f"Новый заказ от @{user.username}: {text}")
+        await update.message.reply_text(f"Спасибо! Заказ принят:\n{text}\n\nМы свяжемся с вами. Админ @{ADMIN_USERNAME}")
         context.user_data['awaiting_order'] = False
+    elif context.user_data.get('awaiting_courier'):
+        logger.info(f"Новый курьер @{user.username}: {text}")
+        await update.message.reply_text(f"Спасибо, {text}! Заявка курьера принята.")
+        context.user_data['awaiting_courier'] = False
     else:
         await update.message.reply_text("Нажмите /start чтобы начать")
 
@@ -60,6 +68,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    logger.info("Bot started polling...")
     app.run_polling()
 
 if __name__ == "__main__":
