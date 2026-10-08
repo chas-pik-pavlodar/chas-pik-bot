@@ -21,7 +21,6 @@ def run_dummy_server():
 
 Thread(target=run_dummy_server, daemon=True).start()
 
-# Берем токен из настроек Render
 TOKEN = os.environ.get("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("Нет BOT_TOKEN в Environment!")
@@ -51,14 +50,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
     text = update.message.text
-    
     if context.user_data.get('awaiting_order'):
-        logger.info(f"Новый заказ от @{user.username}: {text}")
-        await update.message.reply_text(f"Спасибо! Заказ принят:\n{text}\n\nМы свяжемся с вами. Админ @{ADMIN_USERNAME}")
+        logger.info(f"Заказ от @{user.username}: {text}")
+        await update.message.reply_text(f"Спасибо! Заказ принят:\n{text}\nАдмин @{ADMIN_USERNAME} свяжется с вами.")
         context.user_data['awaiting_order'] = False
     elif context.user_data.get('awaiting_courier'):
-        logger.info(f"Новый курьер @{user.username}: {text}")
-        await update.message.reply_text(f"Спасибо, {text}! Заявка курьера принята.")
+        await update.message.reply_text("Спасибо! Заявка курьера принята.")
         context.user_data['awaiting_courier'] = False
     else:
         await update.message.reply_text("Нажмите /start чтобы начать")
