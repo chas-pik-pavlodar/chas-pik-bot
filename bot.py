@@ -1,4 +1,107 @@
-#... вставь предыдущий код до функции take_order, а саму take_order замени на эту версию...
+import os
+import logging
+import threading
+import asyncio
+import sqlite3
+import urllib.parse
+from flask import Flask
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.storage.memory import MemoryStorage
+
+BOT_TOKEN = os.environ.get("TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "1218877896"))
+DB = "database.db"
+
+logging.basicConfig(level=logging.INFO)
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot alive!"
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+def init_db():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER, client_username TEXT, address_from TEXT, address_to TEXT, price TEXT, status TEXT DEFAULT 'new', courier_id INTEGER)")
+    c.execute("CREATE TABLE IF NOT EXISTS couriers (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER UNIQUE, username TEXT)")
+    conn.commit()
+    conn.close()
+
+class OrderForm(StatesGroup):
+    from_address = State()
+    to_address = State()
+    price = State()
+
+def client_kb():
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📦 Сделать заказ")],[KeyboardButton(text="🚚 Стать курьером")]], resize_keyboard=True)
+
+@dp.message(Command("start"))
+async def start(m: Message, state: FSMContext):
+    await state.clear()
+    init_db()
+    await m.answer("ЧАС ПИК Павлодар ⚡️\nЖми Сделать заказ", reply_markup=client_kb())
+
+@dp.message(F.text == "🚚 Стать курьером")
+async def become_courier(m: Message):
+    init_db()
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO couriers (user_id, username) VALUES (?,?)", (m.from_user.id, m.from_user.username or m.from_user.first_name))
+    conn.commit()
+    conn.close()
+    await m.answer("✅ Заявка принята! Ты теперь курьер Час-Пик!\nТвой ID: {}\nОжидай заказы, админ напишет тебе.".format(m.from_user.id))
+    try:
+        await bot.send_message(ADMIN_ID, f"Новый курьер: @{m.from_user.username} ID {m.from_user.id}")
+    except:
+        pass
+
+@dp.message(F.text == "📦 Сделать заказ")
+async def order_start(m: Message, state: FSMContext):
+    await state.set_state(OrderForm.from_address)
+    await m.answer("Откуда забрать? Напиши адрес:")
+
+@dp.message(OrderForm.from_address)
+async def order_from(m: Message, state: FSMContext):
+    await state.update_data(from_addr=m.text)
+    await state.set_state(OrderForm.to_address)
+    await m.answer("Куда доставить? Адрес:")
+
+@dp.message(OrderForm.to_address)
+async def order_to(m: Message, state: FSMContext):
+    await state.update_data(to_addr=m.text)
+    await state.set_state(OrderForm.price)
+    await m.answer("Какую цену предлагаешь? Напиши 1000 или 1500")
+
+@dp.message(OrderForm.price)
+async def order_price(m: Message, state: FSMContext):
+    data = await state.get_data()
+    from_addr = data.get("from_addr")
+    to_addr = data.get("to_addr")
+    price = m.text
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("INSERT INTO orders (client_id, client_username, address_from, address_to, price) VALUES (?,?,?,?,?)", (m.from_user.id, m.from_user.username, from_addr, to_addr, price))
+    order_id = c.lastrowid
+    c.execute("SELECT user_id FROM couriers")
+    couriers = c.fetchall()
+    conn.commit()
+    conn.close()
+    await state.clear()
+    await m.answer(f"Заказ #{order_id} принят! Цена {price}. Разослали курьерам.", reply_markup=client_kb())
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"Взять за {price}", callback_data=f"take_{order_id}")]])
+    text_c = f"ЗАКАЗ #{order_id}\nОт: {from_addr}\nДо: {to_addr}\nЦена: {price}\nКлиент: @{m.from_user.username}"
+    for (cid,) in couriers:
+        try:
+            await bot.send_message(cid, text_c, reply_markup=kb)
+        except:
+            pass
 
 @dp.callback_query(F.data.startswith("take_"))
 async def take_order(cq: CallbackQuery):
@@ -8,33 +111,36 @@ async def take_order(cq: CallbackQuery):
     c.execute("SELECT status, client_id, address_from, address_to, price FROM orders WHERE id=?", (order_id,))
     row = c.fetchone()
     if not row:
-        await cq.answer("Не найден"); conn.close(); return
+        await cq.answer("Не найден")
+        conn.close()
+        return
     status, client_id, from_addr, to_addr, price = row
     if status!= 'new':
-        await cq.answer("Уже взяли!", show_alert=True); conn.close(); return
+        await cq.answer("Уже взяли!", show_alert=True)
+        conn.close()
+        return
     c.execute("UPDATE orders SET status='taken', courier_id=? WHERE id=?", (cq.from_user.id, order_id))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
 
-    # Кнопки маршрута для курьера
-    import urllib.parse
-    from_enc = urllib.parse.quote(from_addr)
-    to_enc = urllib.parse.quote(to_addr)
-    gis_url = f"https://2gis.kz/pavlodar/search/{from_enc} to {to_enc}"
+    from_enc = urllib.parse.quote(from_addr + ", Павлодар")
+    to_enc = urllib.parse.quote(to_addr + ", Павлодар")
+    gis_url = f"https://2gis.kz/pavlodar/search/{from_enc} to {to_enc}/directions"
     google_url = f"https://www.google.com/maps/dir/?api=1&origin={from_enc}&destination={to_enc}"
 
     kb_route = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗺 Маршрут 2GIS (для Павлодара)", url=gis_url)],
+        [InlineKeyboardButton(text="🗺 Маршрут в 2GIS", url=gis_url)],
         [InlineKeyboardButton(text="📍 Маршрут Google Maps", url=google_url)]
     ])
     kb_share = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📍 Я выехал - показать где я", request_location=True)]], resize_keyboard=True)
 
     await cq.message.edit_text(f"ТЫ ВЗЯЛ ЗАКАЗ #{order_id} за {price}\nОт: {from_addr}\nДо: {to_addr}", reply_markup=kb_route)
-    await cq.message.answer("Нажми чтобы клиент видел где ты едешь:", reply_markup=kb_share)
+    await cq.message.answer("Теперь нажми кнопку ниже, чтобы клиент видел где ты:", reply_markup=kb_share)
     await cq.answer("Твой!")
-
     try:
-        await bot.send_message(client_id, f"✅ Твой заказ #{order_id} взял курьер @{cq.from_user.username} за {price}\nСкоро он поделится местоположением и ты увидишь где он едет.")
-    except: pass
+        await bot.send_message(client_id, f"✅ Твой заказ #{order_id} взял курьер @{cq.from_user.username} за {price}\nСейчас он покажет где едет.")
+    except:
+        pass
 
 @dp.message(F.location)
 async def handle_location(m: Message):
@@ -44,11 +150,53 @@ async def handle_location(m: Message):
     row = c.fetchone()
     conn.close()
     if not row:
+        await m.answer("Нет активного заказа")
         return
     order_id, client_id = row
     try:
-        await bot.send_message(client_id, f"🚚 Курьер с заказом #{order_id} едет! Вот где он сейчас:")
+        await bot.send_message(client_id, f"🚚 Курьер с заказом #{order_id} едет! Смотри где он:")
         await bot.send_location(client_id, latitude=m.location.latitude, longitude=m.location.longitude)
-        await m.answer("Отправил клиенту твое местоположение! Можешь отправлять еще по ходу движения.")
-    except:
-        pass
+        await m.answer("📍 Отправил клиенту! Можешь отправлять еще по пути, клиент будет видеть движение.", reply_markup=client_kb())
+    except Exception as e:
+        await m.answer(f"Не смог отправить клиенту: {e}")
+
+@dp.message(Command("couriers"))
+async def list_couriers(m: Message):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("SELECT user_id, username FROM couriers")
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        await m.answer("Курьеров нет")
+        return
+    text = f"Курьеров: {len(rows)}\n"
+    for uid, uname in rows:
+        text += f"@{uname} ID {uid}\n"
+    await m.answer(text)
+
+@dp.message(Command("orders"))
+async def list_orders(m: Message):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("SELECT id, address_from, address_to, price, status FROM orders ORDER BY id DESC LIMIT 10")
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        await m.answer("Заказов нет")
+        return
+    text = ""
+    for oid, fa, ta, pr, st in rows:
+        text += f"#{oid} {fa}->{ta} {pr}тг [{st}]\n"
+    await m.answer(text)
+
+def run_flask():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+async def run_bot():
+    init_db()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    threading.Thread(target=run_flask, daemon=True).start()
+    asyncio.run(run_bot())
