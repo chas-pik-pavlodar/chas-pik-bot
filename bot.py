@@ -62,33 +62,34 @@ async def become_courier(m: Message):
 @dp.message(F.text == "📦 Сделать заказ")
 async def order_start(m: Message, state: FSMContext):
     await state.set_state(OrderForm.from_address)
-    await m.answer("Откуда забрать? Адрес:")
+    await m.answer("Откуда забрать? Напиши адрес:")
 
 @dp.message(OrderForm.from_address)
 async def order_from(m: Message, state: FSMContext):
     await state.update_data(from_addr=m.text)
     await state.set_state(OrderForm.to_address)
-    await m.answer("Куда доставить?")
+    await m.answer("Куда доставить? Напиши адрес:")
 
 @dp.message(OrderForm.to_address)
 async def order_to(m: Message, state: FSMContext):
     await state.update_data(to_addr=m.text)
     await state.set_state(OrderForm.price)
-    await m.answer("Цена? Напиши 1000")
+    await m.answer("💰 Какую цену предлагаешь за доставку?")
 
 @dp.message(OrderForm.price)
 async def order_price(m: Message, state: FSMContext):
     data = await state.get_data()
-    from_addr = data.get("from_addr"); to_addr = data.get("to_addr"); price = m.text
+    from_addr = data.get("from_addr"); to_addr = data.get("to_addr")
+    price = m.text.replace("тг","").replace("тенге","").strip()
     conn = sqlite3.connect(DB); c = conn.cursor()
     c.execute("INSERT INTO orders (client_id, client_username, address_from, address_to, price) VALUES (?,?,?,?,?)", (m.from_user.id, m.from_user.username, from_addr, to_addr, price))
     order_id = c.lastrowid
     c.execute("SELECT user_id FROM couriers"); couriers = c.fetchall()
     conn.commit(); conn.close()
     await state.clear()
-    await m.answer(f"Заказ #{order_id} принят! {price}тг. Ищем курьера.", reply_markup=client_kb())
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"Взять за {price}", callback_data=f"take_{order_id}")]])
-    text_c = f"ЗАКАЗ #{order_id}\nОт: {from_addr}\nДо: {to_addr}\nЦена: {price}\nКлиент: @{m.from_user.username}"
+    await m.answer(f"Заказ #{order_id} принят! От {from_addr} до {to_addr} за {price}тг. Ищем курьера.", reply_markup=client_kb())
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"Взять за {price}тг", callback_data=f"take_{order_id}")]])
+    text_c = f"ЗАКАЗ #{order_id}\nОт: {from_addr}\nДо: {to_addr}\nЦена: {price}тг\nКлиент: @{m.from_user.username}"
     for (cid,) in couriers:
         try: await bot.send_message(cid, text_c, reply_markup=kb)
         except: pass
@@ -111,10 +112,10 @@ async def take_order(cq: CallbackQuery):
         [InlineKeyboardButton(text="🗺 2GIS Маршрут", url=gis_url)],
         [InlineKeyboardButton(text="📍 Google Маршрут", url=google_url)]
     ])
-    await cq.message.edit_text(f"ТЫ ВЗЯЛ ЗАКАЗ #{order_id} за {price}\nОт: {from_addr}\nДо: {to_addr}", reply_markup=kb_route)
+    await cq.message.edit_text(f"ТЫ ВЗЯЛ ЗАКАЗ #{order_id} за {price}тг\nОт: {from_addr}\nДо: {to_addr}", reply_markup=kb_route)
     await cq.message.answer("Жми Обновить где я по пути. Когда доставишь - жми Я доставил и скинь фото.", reply_markup=courier_kb())
     await cq.answer("Твой!")
-    try: await bot.send_message(client_id, f"✅ Заказ #{order_id} взял курьер @{cq.from_user.username} за {price}\nОн покажет где едет и скинет фотоотчет.")
+    try: await bot.send_message(client_id, f"✅ Заказ #{order_id} взял курьер @{cq.from_user.username} за {price}тг")
     except: pass
 
 @dp.message(F.location)
@@ -127,37 +128,34 @@ async def handle_location(m: Message):
     try:
         await bot.send_message(client_id, f"🚚 Курьер с заказом #{order_id} едет:")
         await bot.send_location(client_id, latitude=m.location.latitude, longitude=m.location.longitude)
-        await m.answer("📍 Отправил клиенту! Можешь жать еще для обновления.", reply_markup=courier_kb())
+        await m.answer("📍 Отправил клиенту!", reply_markup=courier_kb())
     except: pass
 
 @dp.message(F.text == "✅ Я доставил - фотоотчет")
 async def ask_photo(m: Message, state: FSMContext):
     await state.set_state(PhotoReport.waiting_photo)
-    await m.answer("Скинь фотоотчет: фото товара у двери / чек / передача клиенту")
+    await m.answer("Скинь фотоотчет: фото у двери / чек")
 
 @dp.message(PhotoReport.waiting_photo, F.photo)
 async def handle_photo_report(m: Message, state: FSMContext):
     conn = sqlite3.connect(DB); c = conn.cursor()
     c.execute("SELECT id, client_id, address_to, price FROM orders WHERE courier_id=? AND status='taken' ORDER BY id DESC LIMIT 1", (m.from_user.id,))
     row = c.fetchone()
-    if not row:
-        await m.answer("Нет активного заказа"); await state.clear(); conn.close(); return
+    if not row: await m.answer("Нет активного заказа"); await state.clear(); conn.close(); return
     order_id, client_id, to_addr, price = row
     c.execute("UPDATE orders SET status='done' WHERE id=?", (order_id,))
     conn.commit(); conn.close()
     await state.clear()
-    # Отправляем фото клиенту
     try:
-        await bot.send_message(client_id, f"✅ Заказ #{order_id} доставлен по адресу {to_addr}! Фотоотчет от курьера:")
-        await bot.send_photo(client_id, m.photo[-1].file_id, caption=f"Заказ #{order_id} - доставлен за {price}тг")
+        await bot.send_message(client_id, f"✅ Заказ #{order_id} доставлен! {to_addr}")
+        await bot.send_photo(client_id, m.photo[-1].file_id, caption=f"Фотоотчет #{order_id} - {price}тг")
     except: pass
-    await m.answer(f"🔥 Заказ #{order_id} закрыт! Фото отправлено клиенту. Жди новые заказы.", reply_markup=client_kb())
-    try: await bot.send_message(ADMIN_ID, f"Заказ #{order_id} DONE курьером @{m.from_user.username} {m.from_user.id}")
+    await m.answer(f"Заказ #{order_id} закрыт! 🔥", reply_markup=client_kb())
+    try: await bot.send_message(ADMIN_ID, f"Заказ #{order_id} DONE курьером @{m.from_user.username}")
     except: pass
 
 @dp.message(F.photo)
 async def auto_photo(m: Message):
-    # если курьер просто кинул фото без кнопки - тоже считаем отчетом
     conn = sqlite3.connect(DB); c = conn.cursor()
     c.execute("SELECT id, client_id FROM orders WHERE courier_id=? AND status='taken' ORDER BY id DESC LIMIT 1", (m.from_user.id,))
     row = c.fetchone(); conn.close()
@@ -166,20 +164,18 @@ async def auto_photo(m: Message):
         try:
             await bot.send_message(client_id, f"📸 Фотоотчет по заказу #{order_id}:")
             await bot.send_photo(client_id, m.photo[-1].file_id)
-            await m.answer("Фото отправил клиенту! Не забудь нажать ✅ Я доставил для закрытия", reply_markup=courier_kb())
+            await m.answer("Фото отправил клиенту!", reply_markup=courier_kb())
         except: pass
 
 @dp.message(Command("couriers"))
 async def list_couriers(m: Message):
     conn = sqlite3.connect(DB); c = conn.cursor(); c.execute("SELECT user_id, username FROM couriers"); rows=c.fetchall(); conn.close()
-    if not rows: await m.answer("Курьеров нет"); return
-    await m.answer("\n".join([f"@{u} ID {uid}" for uid, u in rows]))
+    await m.answer("\n".join([f"@{u} ID {uid}" for uid, u in rows]) if rows else "Курьеров нет")
 
 @dp.message(Command("orders"))
 async def list_orders(m: Message):
     conn = sqlite3.connect(DB); c = conn.cursor(); c.execute("SELECT id, address_from, address_to, price, status FROM orders ORDER BY id DESC LIMIT 10"); rows=c.fetchall(); conn.close()
-    if not rows: await m.answer("Заказов нет"); return
-    await m.answer("\n".join([f"#{o} {f}->{t} {p} [{s}]" for o,f,t,p,s in rows]))
+    await m.answer("\n".join([f"#{o} {f}->{t} {p} [{s}]" for o,f,t,p,s in rows]) if rows else "Заказов нет")
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
@@ -188,4 +184,4 @@ async def run_bot():
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     asyncio.run(run_bot())
-
+    
