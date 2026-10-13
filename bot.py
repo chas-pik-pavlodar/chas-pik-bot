@@ -46,14 +46,14 @@ async def start(m: Message):
         await m.answer("Панель оператора 👩‍💼 - Твой Kaspi 87007675734", reply_markup=operator_kb())
     else:
         await m.answer(f"Час-Пик доставка {PRICE_DELIVERY}тг. Твои данные уже внутри.", reply_markup=client_kb())
-@dp.message(F.text == "🚚 Стать курьером")
-async def become_courier(m: Message):
-    
-        con = sqlite3.connect(DB); cur = con.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS couriers (id INTEGER PRIMARY KEY, courier_id INTEGER UNIQUE)")
-        cur.execute("INSERT OR IGNORE INTO couriers (courier_id) VALUES (?)", (m.from_user.id,))
-        con.commit(); con.close()
-    await m.answer("✅ Ты теперь курьер! Жди заказы. Если появится заказ - я напишу.", reply_markup=courier_kb)
+@dp.message(F.text.contains("Стать курьером"))
+async def become_courier(m: Message, state: FSMContext):
+    await state.clear()
+    con = sqlite3.connect(DB); cur = con.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS couriers (id INTEGER PRIMARY KEY, courier_id INTEGER UNIQUE)")
+    cur.execute("INSERT OR IGNORE INTO couriers (courier_id) VALUES (?)", (m.from_user.id,))
+    con.commit(); con.close()
+    await m.answer("✅ Ты теперь курьер! Жди заказы.")
 @dp.message(F.text == "🛒 Сделать заказ")
 async def new_order(m: Message, state: FSMContext):
     await state.set_state(OrderForm.address); await m.answer("Адрес куда везти? Текст или геолокация 📍")
