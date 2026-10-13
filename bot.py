@@ -12,8 +12,8 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "1218877896"))
 DB = "database.db"
 
 # ===== ТВОИ НОМЕРА - МЕНЯЙ ТУТ =====
-OPERATOR_PHONE = "+77001234567"
-COURIER_PHONE = "+77001234567"
+OPERATOR_PHONE = "+77007675735"
+COURIER_PHONE = "+77474449163"
 # ===================================
 
 HARDCODED_COURIER_ID = 7714431728
