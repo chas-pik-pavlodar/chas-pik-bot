@@ -1,6 +1,6 @@
-import os, logging, threading, asyncio, sqlite3
+import os, logging, 
 from flask import Flask
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dthreading, asyncio, sqlite3ispatcher, F
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
