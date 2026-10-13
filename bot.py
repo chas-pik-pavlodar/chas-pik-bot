@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "Bot is running!"
+    return "Bot is alive! Chas-Pik Pavlodar"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -60,19 +60,17 @@ async def become_courier(m: Message, state: FSMContext):
         init_db()
         conn = sqlite3.connect(DB)
         c = conn.cursor()
-        c.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (m.from_user.id,)) if False else None
         c.execute("INSERT OR IGNORE INTO couriers (user_id, username, status) VALUES (?,?, 'free')", (m.from_user.id, m.from_user.username or m.from_user.first_name))
         conn.commit()
         conn.close()
-        await m.answer("✅ Заявка принята! Ты теперь курьер Час-Пик!\n\nОжидай заказы, админ напишет тебе.", reply_markup=client_kb())
-        # Уведомление админу
+        await m.answer(f"✅ Заявка принята! Ты теперь курьер Час-Пик!\nТвой ID: {m.from_user.id}\n\nОжидай заказы, админ напишет тебе.", reply_markup=client_kb())
         try:
             await bot.send_message(ADMIN_ID, f"🆕 Новый курьер: @{m.from_user.username} | {m.from_user.first_name} | ID: {m.from_user.id}")
         except:
             pass
     except Exception as e:
-        logging.error(f"become_courier error: {e}")
-        await m.answer(f"Ошибка, напиши админу: {e}")
+        logging.error(f"become_courier error: {e}", exc_info=True)
+        await m.answer(f"Ошибка: {e}")
 
 @dp.message(F.text == "📦 Сделать заказ")
 async def order_start(m: Message, state: FSMContext):
@@ -97,12 +95,7 @@ async def order_to(m: Message, state: FSMContext):
     conn.commit()
     conn.close()
     await state.clear()
-    await m.answer(f"✅ Заказ #{order_id} принят!\nОткуда: {from_addr}\nКуда: {to_addr}\nДоставка: {PRICE_DELIVERY}тг\n\nОплата Kaspi: {KASPI_NUMBER} ({KASPI_NAME})\n\nКурьер скоро свяжется!", reply_markup=client_kb())
-    try:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Принять", callback_data=f"take_{order_id}")]])
-        await bot.send_message(ADMIN_ID, f"🆕 Заказ #{order_id}\nОт: {from_addr}\nДо: {to_addr}\nКлиент: @{m.from_user.username} {m.from_user.id}", reply_markup=kb)
-    except:
-        pass
+    await m.answer(f"✅ Заказ #{order_id} принят!\nОткуда: {from_addr}\nКуда: {to_addr}\nДоставка: {PRICE_DELIVERY}тг\n\nОплата Kaspi: {KASPI_NUMBER} ({KASPI_NAME})", reply_markup=client_kb())
 
 @dp.message(F.text == "📋 Заказы")
 async def list_orders(m: Message):
