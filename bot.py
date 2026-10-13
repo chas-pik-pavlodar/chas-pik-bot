@@ -11,7 +11,6 @@ BOT_TOKEN = os.environ.get("TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "1218877896"))
 DB = "database.db"
 
-# ТВОИ КУРЬЕРЫ - НЕ БУДУТ СТИРАТЬСЯ ДАЖЕ НА БЕСПЛАТНОМ RENDER
 HARDCODED_COURIERS = [
     (7714431728, "main_kurier"),
 ]
@@ -63,7 +62,7 @@ def courier_kb():
 @dp.message(Command("start"))
 async def start(m: Message, state: FSMContext):
     await state.clear(); init_db()
-    await m.answer("ЧАС ПИК Павлодар ⚡️\nБыстрая доставка по городу", reply_markup=client_kb())
+    await m.answer("ЧАС ПИК Павлодар ⚡️", reply_markup=client_kb())
 
 @dp.message(F.text == "🚚 Стать курьером")
 async def become_courier(m: Message):
@@ -71,14 +70,12 @@ async def become_courier(m: Message):
     conn = sqlite3.connect(DB); c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO couriers (user_id, username) VALUES (?,?)", (m.from_user.id, m.from_user.username or m.from_user.first_name))
     conn.commit(); conn.close()
-    await m.answer(f"✅ Ты курьер Час-Пик!\nID: {m.from_user.id}\nЖми 💰 Мой заработок чтобы видеть доход", reply_markup=courier_kb())
-    try: await bot.send_message(ADMIN_ID, f"Новый курьер: @{m.from_user.username} ID {m.from_user.id}")
-    except: pass
+    await m.answer(f"✅ Ты курьер! ID {m.from_user.id}", reply_markup=courier_kb())
 
 @dp.message(F.text == "💰 Мой заработок")
 async def my_earnings(m: Message):
     total, count = get_earnings(m.from_user.id)
-    await m.answer(f"💰 Твой заработок:\n\nДоставлено заказов: {count}\nЗаработано: {total} тг\n\nID: {m.from_user.id}", reply_markup=courier_kb() if count>0 or m.from_user.id in [u for u,_ in HARDCODED_COURIERS] else client_kb())
+    await m.answer(f"💰 Заработок:\nЗаказов: {count}\nСумма: {total} тг", reply_markup=courier_kb())
 
 @dp.message(Command("earnings"))
 async def admin_earnings(m: Message):
@@ -88,24 +85,23 @@ async def admin_earnings(m: Message):
     rows = c.fetchall()
     c.execute("SELECT user_id, username FROM couriers"); couriers = c.fetchall()
     conn.close()
-    if not rows:
-        await m.answer("Пока нет доставленных заказов"); return
+    if not rows: await m.answer("Нет доставок"); return
     from collections import defaultdict
     stat = defaultdict(lambda: [0,0])
     for cid, price in rows:
         try: p = int(''.join(filter(str.isdigit, str(price))) or 0)
         except: p=0
         stat[cid][0]+=p; stat[cid][1]+=1
-    text = f"📊 ЗАРАБОТОК КУРЬЕРОВ (всего {len(rows)} заказов):\n\n"
+    text = f"📊 Всего {len(rows)} доставок:\n\n"
     for uid, uname in couriers:
         earn, cnt = stat.get(uid, [0,0])
-        text+=f"@{uname} ID {uid}: {cnt} зак. / {earn} тг\n"
+        text+=f"@{uname} {uid}: {cnt} зак / {earn}тг\n"
     await m.answer(text)
 
 @dp.message(F.text == "📦 Сделать заказ")
 async def order_start(m: Message, state: FSMContext):
     await state.set_state(OrderForm.from_address)
-    await m.answer("Откуда забрать? Напиши адрес:")
+    await m.answer("Откуда забрать? Адрес:")
 
 @dp.message(OrderForm.from_address)
 async def order_from(m: Message, state: FSMContext):
@@ -117,13 +113,13 @@ async def order_from(m: Message, state: FSMContext):
 async def order_to(m: Message, state: FSMContext):
     await state.update_data(to_addr=m.text)
     await state.set_state(OrderForm.price)
-    await m.answer("💰 Какую цену предлагаешь за доставку?")
+    await m.answer("💰 Какую цену предлагаешь?")
 
 @dp.message(OrderForm.price)
 async def order_price(m: Message, state: FSMContext):
     data = await state.get_data()
     from_addr = data.get("from_addr"); to_addr = data.get("to_addr")
-    price = m.text.replace("тг","").replace("тенге","").strip()
+    price = m.text.replace("тг","").strip()
     conn = sqlite3.connect(DB); c = conn.cursor()
     c.execute("INSERT INTO orders (client_id, client_username, address_from, address_to, price) VALUES (?,?,?,?,?)", (m.from_user.id, m.from_user.username, from_addr, to_addr, price))
     order_id = c.lastrowid
@@ -148,14 +144,26 @@ async def take_order(cq: CallbackQuery):
     if status!='new': await cq.answer("Уже взяли!", show_alert=True); conn.close(); return
     c.execute("UPDATE orders SET status='taken', courier_id=? WHERE id=?", (cq.from_user.id, order_id))
     conn.commit(); conn.close()
-    from_enc = urllib.parse.quote(from_addr+", Павлодар"); to_enc = urllib.parse.quote(to_addr+", Павлодар")
-    gis_url = f"https://2gis.kz/pavlodar/search/{from_enc} to {to_enc}/directions"
-    google_url = f"https://www.google.com/maps/dir/?api=1&origin={from_enc}&destination={to_enc}"
-    kb_route = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗺 2GIS Маршрут", url=gis_url)],[InlineKeyboardButton(text="📍 Google Маршрут", url=google_url)]])
-    await cq.message.edit_text(f"ТЫ ВЗЯЛ ЗАКАЗ #{order_id} за {price}тг\nОт: {from_addr}\nДо: {to_addr}", reply_markup=kb_route)
-    await cq.message.answer("Жми Обновить где я по пути. Когда доставишь - жми Я доставил и скинь фото.", reply_markup=courier_kb())
-    await cq.answer("Твой!")
-    try: await bot.send_message(client_id, f"✅ Заказ #{order_id} взял курьер @{cq.from_user.username} за {price}тг")
+
+    # ИСПРАВЛЕННЫЕ МАРШРУТЫ
+    from_q = urllib.parse.quote(f"{from_addr}, Павлодар")
+    to_q = urllib.parse.quote(f"{to_addr}, Павлодар")
+
+    yandex_url = f"https://yandex.kz/maps/?rtext={from_q}~{to_q}&rtt=auto"
+    google_url = f"https://www.google.com/maps/dir/?api=1&origin={from_q}&destination={to_q}&travelmode=driving"
+    gis_from = f"https://2gis.kz/pavlodar/search/{from_q}"
+    gis_to = f"https://2gis.kz/pavlodar/search/{to_q}"
+
+    kb_route = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚕 Яндекс Маршрут (лучший)", url=yandex_url)],
+        [InlineKeyboardButton(text="📍 Google Маршрут", url=google_url)],
+        [InlineKeyboardButton(text="🏠 2GIS Откуда", url=gis_from), InlineKeyboardButton(text="🏁 2GIS Куда", url=gis_to)]
+    ])
+
+    await cq.message.edit_text(f"ТЫ ВЗЯЛ ЗАКАЗ #{order_id} за {price}тг\n\nОт: {from_addr}\nДо: {to_addr}\n\nЖми кнопку маршрута ниже:", reply_markup=kb_route)
+    await cq.message.answer("Когда поедешь - жми 📍 Обновить где я. В конце ✅ Я доставил", reply_markup=courier_kb())
+    await cq.answer("Взял!")
+    try: await bot.send_message(client_id, f"✅ Заказ #{order_id} взял курьер @{cq.from_user.username}")
     except: pass
 
 @dp.message(F.location)
@@ -166,7 +174,7 @@ async def handle_location(m: Message):
     if not row: return
     order_id, client_id = row
     try:
-        await bot.send_message(client_id, f"🚚 Курьер с заказом #{order_id} едет:")
+        await bot.send_message(client_id, f"🚚 Курьер едет с заказом #{order_id}:")
         await bot.send_location(client_id, latitude=m.location.latitude, longitude=m.location.longitude)
         await m.answer("📍 Отправил клиенту!", reply_markup=courier_kb())
     except: pass
@@ -174,26 +182,24 @@ async def handle_location(m: Message):
 @dp.message(F.text == "✅ Я доставил - фотоотчет")
 async def ask_photo(m: Message, state: FSMContext):
     await state.set_state(PhotoReport.waiting_photo)
-    await m.answer("Скинь фотоотчет: фото у двери / чек")
+    await m.answer("Скинь фото у двери")
 
 @dp.message(PhotoReport.waiting_photo, F.photo)
 async def handle_photo_report(m: Message, state: FSMContext):
     conn = sqlite3.connect(DB); c = conn.cursor()
     c.execute("SELECT id, client_id, address_to, price FROM orders WHERE courier_id=? AND status='taken' ORDER BY id DESC LIMIT 1", (m.from_user.id,))
     row = c.fetchone()
-    if not row: await m.answer("Нет активного заказа"); await state.clear(); conn.close(); return
+    if not row: await m.answer("Нет активного"); await state.clear(); conn.close(); return
     order_id, client_id, to_addr, price = row
     c.execute("UPDATE orders SET status='done' WHERE id=?", (order_id,))
     conn.commit(); conn.close()
     await state.clear()
     total, count = get_earnings(m.from_user.id)
     try:
-        await bot.send_message(client_id, f"✅ Заказ #{order_id} доставлен! {to_addr}")
-        await bot.send_photo(client_id, m.photo[-1].file_id, caption=f"Фотоотчет #{order_id} - {price}тг")
+        await bot.send_message(client_id, f"✅ Заказ #{order_id} доставлен!")
+        await bot.send_photo(client_id, m.photo[-1].file_id, caption=f"Фотоотчет #{order_id} {price}тг")
     except: pass
-    await m.answer(f"🔥 Заказ #{order_id} закрыт! Фото отправлено.\n💰 Твой заработок сейчас: {total} тг за {count} заказов", reply_markup=courier_kb())
-    try: await bot.send_message(ADMIN_ID, f"Заказ #{order_id} DONE курьером @{m.from_user.username} {m.from_user.id} за {price}тг\nЕго общий заработок: {total}тг")
-    except: pass
+    await m.answer(f"Заказ #{order_id} закрыт! Заработок: {total}тг ({count} зак)", reply_markup=courier_kb())
 
 @dp.message(F.photo)
 async def auto_photo(m: Message):
@@ -203,29 +209,24 @@ async def auto_photo(m: Message):
     if row:
         order_id, client_id = row
         try:
-            await bot.send_message(client_id, f"📸 Фотоотчет по заказу #{order_id}:")
-            await bot.send_photo(client_id, m.photo[-1].file_id)
-            await m.answer("Фото отправил клиенту!", reply_markup=courier_kb())
+            await bot.send_photo(client_id, m.photo[-1].file_id, caption=f"Фотоотчет #{order_id}")
+            await m.answer("Фото отправил!", reply_markup=courier_kb())
         except: pass
 
 @dp.message(Command("couriers"))
 async def list_couriers(m: Message):
     conn = sqlite3.connect(DB); c = conn.cursor(); c.execute("SELECT user_id, username FROM couriers"); rows=c.fetchall(); conn.close()
-    if not rows: await m.answer("Курьеров нет (нажми Стать курьером)"); return
-    txt = ""
+    if not rows: await m.answer("Курьеров нет"); return
+    txt=""
     for uid, uname in rows:
         earn, cnt = get_earnings(uid)
-        txt+=f"@{uname} ID {uid} - {cnt} зак. / {earn}тг\n"
-    await m.answer(f"Курьеры:\n{txt}")
+        txt+=f"@{uname} {uid} - {cnt}/{earn}тг\n"
+    await m.answer(txt)
 
 @dp.message(Command("orders"))
 async def list_orders(m: Message):
-    conn = sqlite3.connect(DB); c = conn.cursor(); c.execute("SELECT id, address_from, address_to, price, status, courier_id FROM orders ORDER BY id DESC LIMIT 15"); rows=c.fetchall(); conn.close()
-    if not rows: await m.answer("Заказов нет"); return
-    txt = ""
-    for o,f,t,p,s,cid in rows:
-        txt+=f"#{o} {f}->{t} {p}тг [{s}] курьер:{cid}\n"
-    await m.answer(txt)
+    conn = sqlite3.connect(DB); c = conn.cursor(); c.execute("SELECT id, address_from, address_to, price, status FROM orders ORDER BY id DESC LIMIT 10"); rows=c.fetchall(); conn.close()
+    await m.answer("\n".join([f"#{o} {f}->{t} {p}[{s}]" for o,f,t,p,s in rows]) if rows else "Нет заказов")
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
