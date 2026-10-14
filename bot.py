@@ -16,6 +16,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home(): return '<h2>Bot alive!</h2><p><a href="/map">LIVE карта</a></p>'
+
 @app.route('/api/track/<int:courier_id>')
 def api_track(courier_id):
     conn=sqlite3.connect(DB); c=conn.cursor()
@@ -25,30 +26,91 @@ def api_track(courier_id):
     points=[{"lat":r[0],"lon":r[1],"ts":r[2]} for r in reversed(rows)]
     last={"lat":cur[0],"lon":cur[1],"name":cur[2]} if cur else None
     return jsonify({"points":points,"last":last})
+
+@app.route('/api/order/<int:courier_id>')
+def api_order(courier_id):
+    conn=sqlite3.connect(DB); c=conn.cursor()
+    c.execute("SELECT address_from, address_to FROM orders WHERE courier_id=? AND status='taken' ORDER BY id DESC LIMIT 1",(courier_id,))
+    row=c.fetchone(); conn.close()
+    if row: return jsonify({"from":row[0],"to":row[1]})
+    return jsonify({"from":None,"to":None})
+
 @app.route('/api/all')
 def api_all():
     conn=sqlite3.connect(DB); c=conn.cursor()
-    c.execute("SELECT user_id, full_name, last_lat, last_lon, last_time FROM couriers WHERE last_lat IS NOT NULL ORDER BY last_time DESC")
+    c.execute("SELECT user_id, full_name, last_lat, last_lon FROM couriers WHERE last_lat IS NOT NULL")
     rows=c.fetchall(); conn.close()
-    return jsonify([{"id":r[0],"name":r[1],"lat":r[2],"lon":r[3],"time":r[4]} for r in rows])
+    return jsonify([{"id":r[0],"name":r[1],"lat":r[2],"lon":r[3]} for r in rows])
+
 @app.route('/live/<int:courier_id>')
 def live_page(courier_id):
     return f'''<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>LIVE {courier_id}</title><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>body{{margin:0}}#map{{height:100vh}}.info{{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:1000;background:white;padding:10px 18px;border-radius:20px;box-shadow:0 2px 10px rgba(0,0,0,.3);font-family:Arial;font-weight:bold}}</style>
-</head><body><div class="info" id="info">Загрузка...</div><div id="map"></div>
-<script>var map=L.map('map').setView([52.287,76.967],13);L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19}}).addTo(map);
-var poly=L.polyline([],{{color:'red',weight:5}}).addTo(map);var marker=null;
-async function upd(){{let r=await fetch('/api/track/{courier_id}');let d=await r.json();if(d.points.length>0){{let ll=d.points.map(p=>[p.lat,p.lon]);poly.setLatLngs(ll);if(!marker){{marker=L.marker(ll[ll.length-1]).addTo(map);map.fitBounds(poly.getBounds(),{{padding:[40,40]}});}}else marker.setLatLng(ll[ll.length-1]);document.getElementById('info').innerHTML='🔴 LIVE | Точек: '+d.points.length+' | 5с | '+(d.last?.name||'');}}}}
-upd();setInterval(upd,5000);</script></body></html>'''
+<title>LIVE {courier_id}</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>body{{margin:0}}#map{{height:100vh}}#info{{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:1000;background:white;padding:12px 20px;border-radius:25px;box-shadow:0 2px 15px rgba(0,0,0,.4);font-family:Arial;font-weight:bold;text-align:center;max-width:90%}}</style>
+</head><body>
+<div id="info">Загрузка маршрута...</div><div id="map"></div>
+<script>
+var map=L.map('map').setView([52.287,76.967],13);
+L.tileLayer('https://{{{{s}}}}.tile.openstreetmap.org/{{{{z}}}}/{{{{x}}}}/{{{{y}}}}.png',{{maxZoom:19}}).addTo(map);
+var myTrack=L.polyline([],{{color:'red',weight:5}}).addTo(map);
+var routeLine=L.polyline([],{{color:'blue',weight:5,dashArray:'10,10'}}).addTo(map);
+var meMarker=null; var destMarker=null;
+
+async function geocode(addr) {{
+  if(!addr) return null;
+  try {{
+    let r=await fetch('https://nominatim.openstreetmap.org/search?format=json&q='+encodeURIComponent(addr+', Павлодар')+'&limit=1');
+    let j=await r.json(); if(j.length>0) return [parseFloat(j[0].lat), parseFloat(j[0].lon)];
+  }} catch(e){{}} return null;
+}}
+async function getRoute(from,to) {{
+  try {{
+    let url=`https://router.project-osrm.org/route/v1/driving/${{from[1]}},${{from[0]}};${{to[1]}},${{to[0]}}?overview=full&geometries=geojson`;
+    let r=await fetch(url); let j=await r.json();
+    if(j.routes && j.routes[0]) return j.routes[0].geometry.coordinates.map(c=>[c[1],c[0]]);
+  }} catch(e){{}} return [from,to];
+}}
+
+async function upd() {{
+  let tr=await fetch('/api/track/{courier_id}'); let d=await tr.json();
+  let ord=await fetch('/api/order/{courier_id}'); let o=await ord.json();
+  if(d.points.length>0) {{
+    let ll=d.points.map(p=>[p.lat,p.lon]);
+    myTrack.setLatLngs(ll);
+    let last=ll[ll.length-1];
+    if(!meMarker) {{ meMarker=L.marker(last,{{icon:L.icon({{iconUrl:'https://maps.google.com/mapfiles/ms/icons/red-dot.png',iconSize:[32,32]}})}}).addTo(map); map.setView(last,14); }}
+    else meMarker.setLatLng(last);
+
+    if(o.to) {{
+      let dest=await geocode(o.to);
+      if(dest) {{
+        if(!destMarker) destMarker=L.marker(dest,{{icon:L.icon({{iconUrl:'https://maps.google.com/mapfiles/ms/icons/green-dot.png',iconSize:[32,32]}})}}).addTo(map).bindPopup('Доставить: '+o.to);
+        let route=await getRoute(last,dest);
+        routeLine.setLatLngs(route);
+        map.fitBounds(L.latLngBounds(route).extend(myTrack.getBounds()),{{padding:[50,50]}});
+        document.getElementById('info').innerHTML='🔴 Ты | <span style="color:blue">--- Маршрут до: '+o.to+'</span><br>Красная линия - твой путь';
+      }} else {{
+        document.getElementById('info').innerHTML='🔴 LIVE | Точек: '+d.points.length+' | Заказ: '+o.to;
+      }}
+    }} else {{
+      document.getElementById('info').innerHTML='🔴 LIVE | Проехал точек: '+d.points.length;
+      map.fitBounds(myTrack.getBounds(),{{padding:[30,30]}});
+    }}
+  }}
+}}
+upd(); setInterval(upd,7000);
+</script></body></html>'''
+
 @app.route('/map')
 def all_map():
-    return '''<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Все курьеры</title>
+    return '''<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Курьеры</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>body{margin:0}#map{height:100vh}.info{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:1000;background:white;padding:10px 18px;border-radius:20px;box-shadow:0 2px 10px rgba(0,0,0,.3);font-family:Arial;font-weight:bold}}</style>
 </head><body><div class="info">Все курьеры LIVE</div><div id="map"></div>
 <script>var map=L.map('map').setView([52.287,76.967],12);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);var markers={};
-async function upd(){let r=await fetch('/api/all');let data=await r.json();data.forEach(c=>{if(markers[c.id]) markers[c.id].setLatLng([c.lat,c.lon]);else markers[c.id]=L.marker([c.lat,c.lon]).addTo(map).bindPopup(c.name+'<br><a href="/live/'+c.id+'">Маршрут</a>');});}
+async function upd(){let r=await fetch('/api/all');let data=await r.json();data.forEach(c=>{if(markers[c.id]) markers[c.id].setLatLng([c.lat,c.lon]);else markers[c.id]=L.marker([c.lat,c.lon]).addTo(map).bindPopup(c.name+'<br><a href="/live/'+c.id+'">Маршрут с навигацией</a>');});}
 upd();setInterval(upd,5000);</script></body></html>'''
 
 bot=Bot(token=BOT_TOKEN); dp=Dispatcher(storage=MemoryStorage())
@@ -74,48 +136,45 @@ def get_base_url(): return (os.environ.get("RENDER_EXTERNAL_URL") or os.environ.
 
 @dp.message(F.text=="🚚 Стать курьером")
 async def become_courier(m: Message):
-    init_db()
     conn=sqlite3.connect(DB); c=conn.cursor()
     c.execute("INSERT OR IGNORE INTO couriers (user_id, username, full_name) VALUES (?,?,?)",(m.from_user.id, m.from_user.username, m.from_user.first_name))
     c.execute("UPDATE couriers SET username=?, full_name=? WHERE user_id=?",(m.from_user.username, m.from_user.first_name, m.from_user.id))
     conn.commit(); conn.close()
-    await m.answer("✅ Ты теперь курьер! Теперь включи LIVE:", reply_markup=courier_kb())
+    await m.answer("✅ Ты теперь курьер! Включи LIVE:", reply_markup=courier_kb())
 
 @dp.message(F.text=="📞 Связаться с оператором")
-async def contact_operator(m: Message):
-    await m.answer("📞 Оператор: @chas_pik_operator\nТел: +77771234567")
+async def contact_operator(m: Message): await m.answer("📞 Оператор: @chas_pik_operator", reply_markup=client_kb() if m.from_user.id!=ADMIN_ID else admin_kb())
 
 @dp.message(F.text=="🛵 Связаться с курьером")
 async def contact_courier(m: Message):
     conn=sqlite3.connect(DB); c=conn.cursor()
-    c.execute("SELECT courier_id, courier_username, courier_name FROM orders WHERE client_id=? AND status='taken' ORDER BY id DESC LIMIT 1",(m.from_user.id,))
+    c.execute("SELECT courier_id, courier_username FROM orders WHERE client_id=? AND status='taken' ORDER BY id DESC LIMIT 1",(m.from_user.id,))
     row=c.fetchone(); conn.close()
-    if row and row[0]:
-        cid, cun, cname = row
-        if cun: await m.answer(f"Твой курьер: @{cun} ({cname})")
-        else: await m.answer(f"Твой курьер: {cname}\nID: {cid}")
-    else:
-        await m.answer("У тебя нет активного заказа. Сначала сделай заказ.")
+    if row and row[0]: await m.answer(f"Твой курьер: @{row[1]}" if row[1] else f"ID курьера: {row[0]}", reply_markup=client_kb())
+    else: await m.answer("Нет активного заказа", reply_markup=client_kb())
 
 @dp.message(F.text=="💰 Мой заработок")
 async def my_earn(m: Message):
     conn=sqlite3.connect(DB); cur=conn.cursor()
     cur.execute("SELECT price FROM orders WHERE courier_id=? AND status='done' AND date(created_time)=date('now','localtime')",(m.from_user.id,))
     total=sum(int(''.join(filter(str.isdigit, str(p[0]))) or 0) for p in cur.fetchall()); conn.close()
-    await m.answer(f"💰 Сегодня: {total} тг")
+    kb=courier_kb()
+    c=conn=sqlite3.connect(DB); cc=conn.cursor(); cc.execute("SELECT user_id FROM couriers WHERE user_id=?",(m.from_user.id,)); is_c=cc.fetchone(); conn.close()
+    await m.answer(f"💰 Сегодня: {total} тг", reply_markup=kb if is_c else client_kb())
 
 @dp.message(F.text=="📊 Сегодня")
 async def today_stats(m: Message):
     conn=sqlite3.connect(DB); cur=conn.cursor()
-    cur.execute("SELECT COUNT(*), SUM(CAST(price AS INTEGER)) FROM orders WHERE date(created_time)=date('now','localtime')")
-    cnt, summ=cur.fetchone(); conn.close()
-    await m.answer(f"📊 Сегодня заказов: {cnt or 0}")
+    cur.execute("SELECT COUNT(*) FROM orders WHERE date(created_time)=date('now','localtime')")
+    cnt=cur.fetchone()[0]; conn.close()
+    conn=sqlite3.connect(DB); cc=conn.cursor(); cc.execute("SELECT user_id FROM couriers WHERE user_id=?",(m.from_user.id,)); is_c=cc.fetchone(); conn.close()
+    await m.answer(f"📊 Сегодня заказов: {cnt}", reply_markup=courier_kb() if is_c else admin_kb())
 
 @dp.message(F.text=="🆔 Мой ID")
-async def my_id(m: Message): await m.answer(f"Твой ID: {m.from_user.id}")
+async def my_id(m: Message): await m.answer(f"ID: {m.from_user.id}", reply_markup=admin_kb())
 
 @dp.message(F.text=="🔴 Включить LIVE на 8 часов")
-async def ask_live(m: Message): await m.answer("🔴 Нажми Скрепка 📎 -> Геопозиция -> Транслировать LIVE -> 8 часов", reply_markup=courier_kb())
+async def ask_live(m: Message): await m.answer("📎 -> Геопозиция -> Транслировать LIVE -> 8 часов", reply_markup=courier_kb())
 
 @dp.edited_message(F.location)
 @dp.message(F.location)
@@ -140,8 +199,9 @@ async def handle_live_loc(m: Message):
     last_live_notify[uid]=now; base=get_base_url(); live_link=f"{base}/live/{uid}"
     if m.location.live_period and is_first:
         try:
-            kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗺 Открыть мою LIVE карту", url=live_link)]])
-            await m.answer(f"✅ LIVE включен! Карта: {live_link}", reply_markup=kb)
+            kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗺 Открыть карту с маршрутом", url=live_link)]])
+            await m.answer(f"✅ LIVE включен!\nКарта с маршрутом до заказа:\n{live_link}", reply_markup=kb)
+            await m.answer("Панель курьера:", reply_markup=courier_kb())
         except: pass
     if row:
         oid,cid=row; last_client_notify[uid]=now
@@ -155,24 +215,26 @@ async def handle_live_loc(m: Message):
 @dp.message(F.text=="🗺 Мой LIVE маршрут")
 async def show_my_route(m: Message):
     base=get_base_url(); link=f"{base}/live/{m.from_user.id}"
-    kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗺 Открыть LIVE карту", url=link)]])
-    await m.answer(f"Твоя карта:\n{link}", reply_markup=kb)
+    kb_inline=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗺 Открыть карту с навигацией", url=link)],[InlineKeyboardButton(text="📍 Открыть в Google Maps", url=f"https://www.google.com/maps/dir/?api=1&destination={link}")]])
+    # ВАЖНО - сохраняем нижнюю панель!
+    await m.answer(f"Твоя LIVE карта с маршрутом:\n{link}\n\n🔴 Красная линия - твой путь\n🔵 Синяя пунктир - маршрут до клиента", reply_markup=kb_inline)
+    await m.answer("👇 Меню курьера:", reply_markup=courier_kb())
 
 @dp.message(F.text=="🗺 Курьеры на карте")
 async def couriers_map(m: Message):
     if m.from_user.id!=ADMIN_ID: return
     base=get_base_url(); conn=sqlite3.connect(DB); c=conn.cursor()
-    c.execute("SELECT user_id, full_name, username, last_lat, last_lon FROM couriers WHERE last_lat IS NOT NULL ORDER BY last_time DESC")
+    c.execute("SELECT user_id, full_name, username, last_lat, last_lon FROM couriers WHERE last_lat IS NOT NULL")
     rows=c.fetchall(); conn.close()
-    if not rows: await m.answer("Нет локаций"); return
+    if not rows: await m.answer("Нет локаций", reply_markup=admin_kb()); return
     kb_rows=[]
     for uid,fname,uname,lat,lon in rows:
-        name=f"@{uname}" if uname and uname!='None' else fname
-        kb_rows.append([InlineKeyboardButton(text=f"🔴 LIVE {name}", url=f"{base}/live/{uid}")])
+        name=f"@{uname}" if uname else fname
+        kb_rows.append([InlineKeyboardButton(text=f"🔴 {name} - маршрут", url=f"{base}/live/{uid}")])
         try: await bot.send_location(m.chat.id, lat, lon)
         except: pass
-    kb_rows.append([InlineKeyboardButton(text="🗺 ВСЕ КУРЬЕРЫ", url=f"{base}/map")])
-    await m.answer(f"Все карты: {base}/map", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    kb_rows.append([InlineKeyboardButton(text="🗺 ВСЕ", url=f"{base}/map")])
+    await m.answer(f"Карты: {base}/map", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
 
 @dp.message(F.text=="📦 Сделать заказ")
 async def order_start(m: Message, state: FSMContext):
@@ -185,17 +247,18 @@ async def order_to(m: Message, state: FSMContext):
     await state.update_data(to_addr=m.text); await state.set_state(OrderForm.what); await m.answer("Что везем?")
 @dp.message(OrderForm.what)
 async def order_what(m: Message, state: FSMContext):
-    await state.update_data(what=m.text); await state.set_state(OrderForm.note); await m.answer("Уточнение / подъезд?")
+    await state.update_data(what=m.text); await state.set_state(OrderForm.note); await m.answer("Подъезд / уточнение?")
 @dp.message(OrderForm.note)
 async def order_note(m: Message, state: FSMContext):
-    await state.update_data(note=m.text); await state.set_state(OrderForm.price); await m.answer("Цена (тг)?")
+    await state.update_data(note=m.text); await state.set_state(OrderForm.price); await m.answer("Цена тг?")
 @dp.message(OrderForm.price)
 async def order_price(m: Message, state: FSMContext):
     data=await state.get_data(); price=m.text.replace("тг","").strip()
     conn=sqlite3.connect(DB); c=conn.cursor()
     c.execute("INSERT INTO orders (client_id, client_username, client_name, address_from, address_to, what, note, price, created_time) VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",(m.from_user.id,m.from_user.username,m.from_user.first_name,data.get("from_addr"),data.get("to_addr"),data.get("what"),data.get("note"),price))
     oid=c.lastrowid; c.execute("SELECT user_id FROM couriers"); cours=c.fetchall(); conn.commit(); conn.close(); await state.clear()
-    await m.answer(f"✅ Заказ #{oid} принят! Ищем курьера...")
+    conn=sqlite3.connect(DB); cc=conn.cursor(); cc.execute("SELECT user_id FROM couriers WHERE user_id=?",(m.from_user.id,)); is_c=cc.fetchone(); conn.close()
+    await m.answer(f"✅ Заказ #{oid} принят!", reply_markup=courier_kb() if is_c else client_kb())
     kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"Взять за {price}тг", callback_data=f"take_{oid}")]])
     txt=f"🔥 ЗАКАЗ #{oid}\nОт: {data.get('from_addr')}\nДо: {data.get('to_addr')}\nЧто: {data.get('what')}\nЦена: {price}тг"
     for (cid,) in cours:
@@ -207,37 +270,39 @@ async def take_order(cq: CallbackQuery):
     oid=int(cq.data.split("_")[1]); conn=sqlite3.connect(DB); c=conn.cursor()
     c.execute("SELECT status FROM orders WHERE id=?",(oid,)); r=c.fetchone()
     if not r or r[0]!='new': await cq.answer("Уже взяли!"); conn.close(); return
-    c.execute("UPDATE orders SET status='taken', courier_id=?, courier_username=?, courier_name=? WHERE id=?",(cq.from_user.id,cq.from_user.username,cq.from_user.first_name,oid)); conn.commit(); conn.close()
-    await cq.message.edit_text(f"✅ ТЫ ВЗЯЛ #{oid} - включи LIVE!"); await cq.answer("Взял!")
+    c.execute("UPDATE orders SET status='taken', courier_id=?, courier_username=?, courier_name=? WHERE id=?",(cq.from_user.id,cq.from_user.username,cq.from_user.first_name,oid)); conn.commit()
+    c.execute("SELECT client_id FROM orders WHERE id=?",(oid,)); client=c.fetchone()[0]; conn.close()
+    await cq.message.edit_text(f"✅ ТЫ ВЗЯЛ #{oid} - включи LIVE и открой свою карту для навигации!")
+    await cq.answer("Взял!")
+    try: await bot.send_message(client, f"✅ Курьер взял заказ #{oid} и уже едет!")
+    except: pass
 
 @dp.message(F.text=="✅ Я доставил - фотоотчет")
 async def ask_photo(m: Message, state: FSMContext):
-    await state.set_state(PhotoReport.waiting_photo); await m.answer("Скинь фото доставки")
+    await state.set_state(PhotoReport.waiting_photo); await m.answer("Скинь фото доставки", reply_markup=courier_kb())
 @dp.message(PhotoReport.waiting_photo, F.photo)
 async def handle_photo(m: Message, state: FSMContext):
     conn=sqlite3.connect(DB); c=conn.cursor()
     c.execute("SELECT id, client_id FROM orders WHERE courier_id=? AND status='taken' ORDER BY id DESC LIMIT 1",(m.from_user.id,)); row=c.fetchone()
-    if not row: await state.clear(); conn.close(); return
+    if not row: await state.clear(); conn.close(); await m.answer("Нет активного заказа", reply_markup=courier_kb()); return
     oid,cid=row; c.execute("UPDATE orders SET status='done' WHERE id=?",(oid,)); conn.commit(); conn.close(); await state.clear()
-    await m.answer(f"✅ Закрыт #{oid}!")
-    try: await bot.send_message(cid, f"✅ Заказ #{oid} доставлен! Оцени курьера")
+    await m.answer(f"✅ Заказ #{oid} закрыт!", reply_markup=courier_kb())
+    try: await bot.send_message(cid, f"✅ Заказ #{oid} доставлен!")
     except: pass
 
 @dp.message(F.text=="👑 Все заказы")
 async def all_orders(m: Message):
     if m.from_user.id!=ADMIN_ID: return
     conn=sqlite3.connect(DB); c=conn.cursor()
-    c.execute("SELECT id, address_from, address_to, price, status FROM orders ORDER BY id DESC LIMIT 15"); rows=c.fetchall(); conn.close()
-    txt="Заказы:\n"
-    for r in rows: txt+=f"#{r[0]} {r[1]}->{r[2]} {r[3]}тг [{r[4]}]\n"
-    await m.answer(txt)
+    c.execute("SELECT id, address_from, address_to, price, status FROM orders ORDER BY id DESC LIMIT 10"); rows=c.fetchall(); conn.close()
+    txt="Заказы:\n" + "\n".join([f"#{r[0]} {r[1]}->{r[2]} {r[3]}тг [{r[4]}]" for r in rows])
+    await m.answer(txt, reply_markup=admin_kb())
 
 @dp.message(F.text=="👥 Курьеры")
 async def list_c(m: Message):
     conn=sqlite3.connect(DB); c=conn.cursor(); c.execute("SELECT user_id, username, full_name FROM couriers"); rows=c.fetchall(); conn.close()
-    txt=f"Курьеров: {len(rows)}\n"
-    for uid,uname,fname in rows: txt+=f"{fname} @{uname} - {uid}\n"
-    await m.answer(txt)
+    txt=f"Курьеров: {len(rows)}\n" + "\n".join([f"{r[2]} @{r[1]} - {r[0]}" for r in rows])
+    await m.answer(txt, reply_markup=admin_kb())
 
 @dp.message(Command("start"))
 async def start_cmd(m: Message, state: FSMContext):
@@ -245,7 +310,7 @@ async def start_cmd(m: Message, state: FSMContext):
     if m.from_user.id==ADMIN_ID: await m.answer("АДМИН ПАНЕЛЬ", reply_markup=admin_kb())
     else:
         conn=sqlite3.connect(DB); c=conn.cursor(); c.execute("SELECT user_id FROM couriers WHERE user_id=?",(m.from_user.id,)); is_courier=c.fetchone(); conn.close()
-        if is_courier: await m.answer("Привет, курьер!", reply_markup=courier_kb())
+        if is_courier: await m.answer("Привет, курьер! Твоя панель восстановлена:", reply_markup=courier_kb())
         else: await m.answer("ЧАС ПИК Павлодар - доставка", reply_markup=client_kb())
 
 def run_flask(): app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)))
